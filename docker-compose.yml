@@ -1,0 +1,7 @@
+services:
+  result-calc:
+    build: .
+    container_name: result-calc
+    env_file:
+      - .env
+    restart: always
