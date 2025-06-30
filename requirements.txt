@@ -1,4 +1,6 @@
+flask
 discord.py
 opencv-python-headless
 easyocr
 pytesseract
+numpy
