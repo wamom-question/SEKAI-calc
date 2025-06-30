@@ -159,6 +159,14 @@ async def on_message(message):
                     preprocessed_right = preprocess_image_for_ocr(right_half)
                     ocr_text_list = extract_score_with_easyocr(preprocessed_right)
 
+                    # 失敗時は左右10pxカットして再試行
+                    if len(ocr_text_list) < 5:
+                        cut_left = 10
+                        cut_right = 10
+                        if preprocessed_right.shape[1] > (cut_left + cut_right + 10):
+                            cut_img = preprocessed_right[:, cut_left:preprocessed_right.shape[1]-cut_right]
+                            ocr_text_list = extract_score_with_easyocr(cut_img)
+
                     if len(ocr_text_list) < 5:
                         _, enc_img = cv2.imencode('.png', preprocessed_right)
                         right_img_bytes = enc_img.tobytes()
