@@ -2,6 +2,18 @@
 
 プロセカのリザルト画像からスコアや判定数を自動で抽出するOCR APIサーバーです。
 
+---
+
+## 目次
+- [主な機能](#主な機能)
+- [APIエンドポイント](#apiエンドポイント)
+- [開発環境構築](#開発環境構築)
+- [コントリビュートガイド](#コントリビュートガイド)
+- [コーディング規約](#コーディング規約)
+- [注意事項](#注意事項)
+
+---
+
 ## 主な機能
 - プロセカのリザルト画像をAPIに送信すると、スコア・判定数を自動でOCR認識し、計算結果をJSONで返します。
 - デバッグモードでは、認識領域のデバッグ画像や詳細サマリーも返します。
@@ -38,24 +50,57 @@ curl -X POST http://localhost:5000/ocr \
 }
 ```
 
-## Dockerでの実行方法
-1. `docker-compose.yml` と `dockerfile` が同梱されています。
-2. 以下のコマンドでビルド＆起動できます。
+- `score`は `PERFECT×3 + GREAT×2 + GOOD×1 + BAD×0 + MISS×0` で計算されます。(ランクマッチ)
+- `debug=1`時は、認識領域の可視化画像（base64）や認識状況サマリーも返却されます。
+- エラー時は`error`キーが含まれます。
 
-```sh
-docker compose up --build -d
-```
 
-3. 停止は以下で可能です。
+---
 
-```sh
-docker compose down
-```
+## 開発環境構築
 
-## 必要な環境
+### 1. 必要な環境
 - Docker（推奨）または Python 3.8以降
-- 必要なパッケージは `requirements.txt` を参照し、`pip install -r requirements.txt` でインストールしてください。
-- OpenCV, pytesseract, easyocr などが必要です。
+- OpenCV, pytesseract, easyocr など
+
+### 2. セットアップ手順
+- Docker利用の場合：
+  ```sh
+  docker compose up --build -d
+  ```
+- Pythonローカル実行の場合：
+  ```sh
+  pip install -r requirements.txt
+  python result-calc.py
+  ```
+
+### 3. テスト・Lint
+- テストコードは`tests/`配下に配置してください（pytest推奨）。
+- Lintは`flake8`や`black`等を利用してください。
+- 例：
+  ```sh
+  flake8 result-calc.py
+  black result-calc.py
+  ```
+
+---
+
+## コントリビュートガイド
+- Issue/PRは日本語・英語どちらでも歓迎です。
+- ブランチ運用：
+  - `main`は常に安定版、開発は`feature/xxx`や`fix/xxx`で行い、PRでレビューを受けてください。
+- コードには型アノテーション・docstring・コメントを推奨します。
+- 重要な仕様変更時はREADMEも更新してください。
+
+---
+
+## コーディング規約
+- Python 3.8+、PEP8準拠
+- 型ヒント・docstring必須
+- ログ出力は`logging`を利用
+- 定数はファイル冒頭で定義
+
+---
 
 ## 注意事項
 - ランクマッチの対戦結果画面には対応していません。
@@ -65,4 +110,4 @@ docker compose down
 
 ---
 
-ご質問・不具合報告はリポジトリのIssueまでお願いします。
+ご質問・不具合報告・コントリビュートはリポジトリのIssueまたはPRまでお願いします。

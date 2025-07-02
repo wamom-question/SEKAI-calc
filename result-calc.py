@@ -1,4 +1,4 @@
-from flask import Flask, request, jsonify, send_file
+from flask import Flask, request, jsonify
 import base64
 import cv2
 import numpy as np
@@ -6,13 +6,34 @@ import easyocr
 import pytesseract
 import math
 import re
-import random
+import logging
 from io import BytesIO
+from typing import List, Tuple, Any
+
+# 定数定義
+TARGET_IMAGE_SIZE = (1800, 1080) # 画像のターゲットサイズ(現時点でのプロセカでは5:3で切り抜くと安定)
+MAX_OCR_ATTEMPTS = 10 # OCRの試行回数
+MAX_PLAYER_ATTEMPTS = 5 # perfectとmissの位置を抽出する最大試行回数
+PERFECT_GREAT_RATIO = 1.5 # GREATがPERFECTの1.5倍以上でない時はエラーとして再試行する
+
+# ログ設定
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
 reader = easyocr.Reader(['en'], gpu=False)
 
-def preprocess_image_for_ocr(image, threshold=180, blur_ksize=5, contrast=1.0, resize_ratio=1.0):
+
+def preprocess_image_for_ocr(
+    image: np.ndarray,
+    threshold: int = 180,
+    blur_ksize: int = 5,
+    contrast: float = 1.0,
+    resize_ratio: float = 1.0
+) -> np.ndarray:
+    """
+    OCR用に画像を前処理する
+    """
     img = image.copy()
     if resize_ratio != 1.0:
         img = cv2.resize(img, None, fx=resize_ratio, fy=resize_ratio, interpolation=cv2.INTER_LINEAR)
@@ -35,14 +56,18 @@ def preprocess_image_for_ocr(image, threshold=180, blur_ksize=5, contrast=1.0, r
         blurred = thresh
     return blurred
 
-def extract_perfect_miss_positions(image):
+
+def extract_perfect_miss_positions(image: np.ndarray) -> Tuple[List[Tuple[int, int, int, int]], List[Tuple[int, int, int, int]]]:
+    """
+    画像からPERFECTとMISSの位置を抽出
+    """
     preprocessed_img = preprocess_image_for_ocr(image)
     details = pytesseract.image_to_data(preprocessed_img, output_type=pytesseract.Output.DICT)
     all_perfect_positions = []
     all_miss_positions = []
     all_perfect_text_positions = []
     for i, word in enumerate(details['text']):
-        if 'ALL' in word.upper():
+        if 'ALL' in word.upper(): # ALL PERFECTがあると誤検知するので先に除外
             if i+1 < len(details['text']) and 'PERFECT' in details['text'][i+1].upper():
                 x = details['left'][i]
                 y = details['top'][i]
@@ -62,18 +87,34 @@ def extract_perfect_miss_positions(image):
             all_miss_positions.append((x, y, w, h))
     return all_perfect_positions, all_miss_positions
 
-def blackout_positions(image, positions):
+
+def blackout_positions(image: np.ndarray, positions: List[Tuple[int, int, int, int]]) -> np.ndarray:
+    """
+    指定した位置を黒塗りする
+    """
     for (x, y, w, h) in positions:
         cv2.rectangle(image, (x, y), (x + w, y + h), (0, 0, 0), -1)
     return image
 
-def extract_score_with_easyocr(image):
+
+def extract_score_with_easyocr(image: np.ndarray) -> List[str]:
+    """
+    easyocrでスコア部分のテキストを抽出
+    """
     results = reader.readtext(image, detail=0)
     numbers = [re.sub(r'\D', '', text) for text in results]
     numbers = [num for num in numbers if num]
     return numbers
 
-def draw_labels(image, perfect_positions, miss_positions):
+
+def draw_labels(
+    image: np.ndarray,
+    perfect_positions: List[Tuple[int, int, int, int]],
+    miss_positions: List[Tuple[int, int, int, int]]
+) -> np.ndarray:
+    """
+    PERFECT/MISSの位置にラベルを描画
+    """
     labeled_image = image.copy()
     for perfect_pos, miss_pos in zip(perfect_positions, miss_positions):
         _, y_perfect, _, h_perfect = perfect_pos
@@ -87,9 +128,14 @@ def draw_labels(image, perfect_positions, miss_positions):
         cv2.rectangle(labeled_image, (x_label, y_label), (x_label + square_width, y_label + square_height), (0, 255, 0), 2)
     return labeled_image
 
+
 @app.route('/ocr', methods=['POST'])
-def ocr_endpoint():
+def ocr_endpoint() -> Any:
+    """
+    画像を受け取り、スコア情報をOCRで抽出するAPIエンドポイント
+    """
     if 'image' not in request.files:
+        logger.warning('No image uploaded')
         return jsonify({'error': 'No image uploaded'}), 400
     file = request.files['image']
     debug = request.form.get('debug', '0') == '1'
@@ -109,10 +155,10 @@ def ocr_endpoint():
         y_start = (h - target_h) // 2
         img = img[y_start:y_start+target_h, :]
         h = target_h
-    img = cv2.resize(img, (1800, 1080), interpolation=cv2.INTER_AREA)
+    img = cv2.resize(img, TARGET_IMAGE_SIZE, interpolation=cv2.INTER_AREA)
     processed_img = img.copy()
     all_perfect_positions, all_miss_positions = [], []
-    for _ in range(5):
+    for _ in range(MAX_PLAYER_ATTEMPTS):
         perfect_positions, miss_positions = extract_perfect_miss_positions(processed_img)
         if not perfect_positions or not miss_positions:
             break
@@ -147,7 +193,7 @@ def ocr_endpoint():
         debug_pre_b64 = None
         debug_params = None
         player_debug = {}
-        for _ in range(10):
+        for _ in range(MAX_OCR_ATTEMPTS):
             threshold = np.random.randint(140, 200)
             blur_ksize = np.random.choice([3, 5, 7])
             contrast = np.random.uniform(0.8, 1.5)
@@ -187,7 +233,7 @@ def ocr_endpoint():
                 good_val    = int(ocr_text_list[2])
                 bad_val     = int(ocr_text_list[3])
                 miss_val    = int(ocr_text_list[4])
-                if perfect_val == 0:
+                if perfect_val == 0 or (perfect_val > 0 and great_val >= perfect_val * PERFECT_GREAT_RATIO):
                     retry_ocr = False
                     for _ in range(5):
                         threshold = np.random.randint(140, 200)
@@ -199,9 +245,10 @@ def ocr_endpoint():
                         if len(retry_ocr_text_list) >= 5:
                             try:
                                 retry_perfect = int(retry_ocr_text_list[0])
-                                if retry_perfect != 0:
+                                retry_great   = int(retry_ocr_text_list[1])
+                                if retry_perfect != 0 and not (retry_perfect > 0 and retry_great >= retry_perfect * PERFECT_GREAT_RATIO):
                                     perfect_val = retry_perfect
-                                    great_val   = int(retry_ocr_text_list[1])
+                                    great_val   = retry_great
                                     good_val    = int(retry_ocr_text_list[2])
                                     bad_val     = int(retry_ocr_text_list[3])
                                     miss_val    = int(retry_ocr_text_list[4])
@@ -212,15 +259,14 @@ def ocr_endpoint():
                     if not retry_ocr:
                         all_player_scores.append({
                             'player': player_number,
-                            'error': 'PERFECTが0のままです',
+                            'error': 'PERFECTが0またはGREATがPERFECTの{PERFECT_GREAT_RATIO}倍以上のままです',
                             'ocr_result': ocr_text_list,
                             **player_debug
                         })
-                        summary_lines.append(f"Player_{player_number}: 状態=PERFECTが0のままです")
+                        summary_lines.append(f"Player_{player_number}: 状態=PERFECTが0またはGREATがPERFECTの{PERFECT_GREAT_RATIO}倍以上のままです")
                         player_number += 1
                         continue
                 total_notes = perfect_val + great_val + good_val + bad_val + miss_val
-                    
                 score_raw = (
                     perfect_val * 3 +
                     great_val * 2 +
@@ -240,18 +286,19 @@ def ocr_endpoint():
                 })
                 summary_lines.append(f"Player_{player_number}: 状態=正常 \n-# PERFECT={perfect_val}, GREAT={great_val}, GOOD={good_val}, BAD={bad_val}, MISS={miss_val}, スコア={score}")
             except Exception as e:
+                logger.error(f'数値変換に失敗: {e}')
                 all_player_scores.append({
                     'player': player_number,
                     'error': f'数値変換に失敗: {e}',
                     'ocr_result': ocr_text_list,
                     **player_debug
                 })
-                summary_lines.append(f"Player_{player_number}: 状態=数値変換に失敗 \n-# 手動で入力してください。")
+                summary_lines.append(f"Player_{player_number}: 状態=数値変換に失敗 ")
         player_number += 1
 
     response = {'results': all_player_scores}
     if len(all_player_scores) == 0:
-        print('[OCR API] resultsが空配列です。画像内容や検出ロジックを確認してください。')
+        logger.warning('[OCR API] resultsが空配列です。画像内容や検出ロジックを確認してください。')
     if debug:
         labeled_image = draw_labels(img, all_perfect_positions, all_miss_positions)
         _, encoded_img = cv2.imencode('.png', labeled_image)
@@ -260,6 +307,7 @@ def ocr_endpoint():
         response['debug_image_base64'] = img_b64
         response['debug_summary'] = '\n'.join(summary_lines)
     return jsonify(response)
+
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5000)
